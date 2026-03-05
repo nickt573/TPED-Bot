@@ -1,5 +1,5 @@
-import sqlite3
-DB_PATH = "entries.db"
+import sqlite3, os
+DB_PATH = os.path.join(os.path.dirname(__file__), "entries.db")
 
 week2idx = {
     "Monday": 0,
