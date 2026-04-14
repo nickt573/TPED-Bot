@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 from database import init_db, add_entry, get_random, get_by_link, delete_entry, get_by_entry, delete_db, idx2week, week2idx
+from scraper import parse_park
 from datetime import time, datetime
 from zoneinfo import ZoneInfo
 
@@ -43,7 +44,7 @@ intents.bans = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# INIT/INFO
+# Init/Bot Info
 @bot.event
 async def on_ready():
     if not send.is_running():
@@ -82,12 +83,13 @@ f'''
         *Category*: Any of the following: park, manufacturer, ride, element, model, trivia, or discussion. Do not diverge from this list.
         
         *Link*: Optional link, but extremely recommended. Use RCDB.com for links.   
+* Use !mass_add [park] to add a park and all of its rides in one command. Duplicate entries will not be added.
 * Use !pull to force pull an entry. This should typcially only be used for testing or for manually changing the discussion early. The original !pull message will be deleted to hide this.
 * Use !delete [content] to remove an entry if there is a duplicate for example. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
 
 **Reminder Scheduling:**
 * Use !schedule YYYY-MM-DD HH:MM [message] with the time in 24-hour time to schedule a reminder message.
-    
+
 
 **E-Board Task Reminders**
 * Every {idx2week[task_day]} at {task_hour}:{minute_message}, I will automatically remind E-Board members of their incomplete weekly tasks and tasks due the next day.
@@ -99,29 +101,32 @@ f'''
 Only members with the E-Board flair will be able to use any of the bot commands, including !help
 ''')
 
-# Roller coaster Database Management
-@bot.command()
-@commands.has_role("E-Board")
-async def add(ctx, *, message):
-    message = [m.strip() for m in message.split(',')]
-    content = message[0]
-    category = message[1].lower()
-    author_id = ctx.author.id
-    if len(message) > 2:
-        link = message[2]
-    else:
-        link = None
+# Roller Coaster Database Management
+async def add_function(ctx, message, mass=False):
+    content, category, link = message
     confirm = f"CONFIRM: You are adding `{content}` as `{category}`"
-    entry = get_by_entry(content)
-    # dblink = get_by_link(link) // Obsolete --> Allowing multiple entries with same link
-    if entry:
+    
+    if not link:
+        content_entry = get_by_entry(content) 
+        if content_entry:
+            await ctx.send(f"{content} already exists")
+            return
+    else:
+         confirm += f" with link {link}"
+    link_entry = get_by_link(link, True)
+    if link_entry and category != "trivia" and link_entry["category"] != "trivia":
         await ctx.send(f"{content} already exists")
         return
-    if link:
-        confirm += f" with link {link}"
+    
     confirm += "? `[yes/no]`"
-    await ctx.send(confirm)
+    if not mass:
+        await ctx.send(confirm)
 
+    author_id = ctx.author.id
+    if mass:
+        add_entry(content, category, author_id, link)
+        return
+    
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel and m.content.lower().strip() in ["yes", "no"]
     try:
@@ -134,6 +139,60 @@ async def add(ctx, *, message):
         await ctx.send("Entry added")
     else:
         await ctx.send("Entry cancelled.")
+
+def parse_message(message):
+    try:
+        parts = [m.strip() for m in message.split(',')]
+        content = parts[0]
+        category = parts[1].lower()
+        link = parts[2] if len(parts) > 2 else None
+        return (content, category, link)
+    except:
+        return None
+
+@bot.command()
+@commands.has_role("E-Board")
+async def add(ctx, *, message):
+    content = parse_message(message)
+    if not content:
+        await ctx.send("Formatting: !add [content], [category], [optional link]")
+        return
+    await add_function(ctx, content)
+
+@bot.command()
+@commands.has_role("E-Board")
+async def mass_add(ctx, *, message):
+    result = parse_park(message)
+    if not result:
+        await ctx.send("Could not find park")
+        return
+    
+    await ctx.send("You are about to add the following entries:")
+
+    formatted = "\n".join(
+        f"• **{name}**, {category}, {link or 'no link'}"
+        for name, category, link in result
+    )
+    embed = discord.Embed(
+        description=formatted,
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text="Confirm with yes/no")
+    await ctx.send(embed=embed)
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower().strip() in ["yes", "no"]
+    try:
+        response = await bot.wait_for("message", check=check, timeout=15)
+    except asyncio.TimeoutError:
+        await ctx.send("Confirmation timed out. Entries not added.")
+        return
+    if response.content.lower() == "yes":
+        for item in result:
+            await add_function(ctx, item, mass=True)
+        await ctx.send("New entries successfully added")
+    else:
+        await ctx.send("Mass adding cancelled.")
 
 @bot.command()
 @commands.has_role("E-Board")
@@ -313,6 +372,8 @@ async def schedule(ctx, date: str, time: str, *, message):
     if channel:
         await channel.send(message)
 
+
+
 # E-Board Tasks
 '''
 Desired task sequencing:
@@ -329,7 +390,7 @@ async def tasks(ctx):
     sp_tasks, wk_tasks = get_tasks()
     if channel:
         for role in IDs:
-            mention = f"<@{IDs[role]}>" # Make sure to add @ in production
+            mention = f"<@{IDs[role]}>" 
             lines = []
             if role in sp_tasks:
                 for task in sp_tasks[role]:
@@ -352,13 +413,15 @@ async def tasks(ctx):
                                 f"• **{task.title}** — Status: {task.status}"
                             )
             if lines:
-                message_content = mention + "\n" + "\n".join(lines)
+                message_content = "\n".join(lines)
                 if get_pie(sp_tasks, wk_tasks)[role] >= 3:
                     pie_message = "🥧" + get_pie_message() + "🥧"
                     message_content += "\n" + pie_message
-                await channel.send(message_content)
+                embed = discord.Embed(
+                    description=f"{message_content}",
+                    color=discord.Color.gold())
+                await channel.send(content=mention, embed=embed)
 
-# For reminders of weekly tasks before EBoard
 @task_module.loop(time=time(hour=task_hour, minute=task_minute, tzinfo=ZoneInfo("America/New_York")))
 async def task_scheduler():
     if not task_enabled:
@@ -369,7 +432,7 @@ async def task_scheduler():
     if channel:
         sp_tasks, wk_tasks = get_tasks()
         for role in IDs:
-            mention = f"<@{IDs[role]}>" # Make sure to add @ in production
+            mention = f"<@{IDs[role]}>" 
             sp_lines = []
             wk_lines = []
             if now.weekday() == task_day:

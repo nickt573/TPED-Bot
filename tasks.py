@@ -49,7 +49,7 @@ def get_pie(sp_tasks, wk_tasks):
     pie = {}
 
     init_tasks()
-    ws = worksheets[7]
+    ws = worksheets[8]
     role = ws.title
 
     try:
@@ -86,7 +86,7 @@ def get_tasks():
     sp_tasks = {}
     wk_tasks = {}
     init_tasks()
-    for ws in worksheets[:7]:
+    for ws in worksheets[1:8]:
         role = ws.title
         try:
             rows = ws.get_all_values()
