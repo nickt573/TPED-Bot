@@ -23,3 +23,8 @@ Use !tasks to announce ALL incomplete E-Board tasks, including ones with more th
 Use !set_task_time [day] [24-hour time] to change the weekly reminders. Use !get_task_time to see what it is currently set to.
 Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
 
+File System:
+- changelog.md: Record of all of the changelogs
+- main.py: Main execution of commands for the bot
+- scraper.py, tasks.py: Helper files to port functions to main.py
+- database.py, entries.db: Handles persistence

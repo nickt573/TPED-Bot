@@ -58,7 +58,7 @@ def get_random():
         conn.commit()
         return dict(row)
 
-def get_by_link(content, return_row=True):
+def get_by_link(content, return_row=False):
     if not content:
         return None
     with sqlite3.connect(DB_PATH) as conn:

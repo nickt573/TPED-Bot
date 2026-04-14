@@ -1,3 +1,18 @@
+**Updates for week of April 12**
+*Changes:*
+* Reformatted E-Board tasks to be more visually appealing
+* Changed requirements for allowing duplicate entries
+    --> Only allowed duplicate links if at least one entry is trivia-related
+    --> Duplicate ride names allowed, provided the new entry has a link to distinguish them
+
+*Additions*
+* !mass_add [park] command to add a park along with its operating rides to the database in one command
+* Added error message and suggestions for improperly-formatted database entry
+
+*Code/File System*
+* Added scraper.py to handle finding data for mass aditions
+* Added two new helper functions to assist in adding mass additions to database (add_function and parse_message)
+
 **Updates for week of March 1**
 *Changes:*
 * Tasks due before the configured day of the week will have an asynchronous reminder at the configured time on set day
@@ -14,7 +29,7 @@
 * !help reformatting
 
 *Additions*
-* Weekly tasks automatically remind day before set day
+* Weekly tasks automatically remind on set day
 * Specific tasks automatically remind day before due date
 * Reminder if changing task or discussion time while disabled
 
