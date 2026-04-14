@@ -8,6 +8,7 @@
 *Additions*
 * !mass_add [park] command to add a park along with its operating rides to the database in one command
 * Added error message and suggestions for improperly-formatted database entries
+* Bot will announce when it has finished rebooting after an update
 
 *Code/File System*
 * Added scraper.py to handle finding data for mass aditions

@@ -24,6 +24,7 @@ CHANNEL = 1428598017656619100 # general chat
 ECHANNEL = 1434310637936447488 # eboard general chat
 ANNOUNCE = 1434239578457509958 # announcement chat
 EANNOUNCE = 1434589025158824130 # eboard announcement chat
+BOTCOMMAND = 1454957233627594874 # bot commands channel
 ME = 699427677383294986 # Nick T. user ID
 
 # Task reminder configurations
@@ -47,6 +48,8 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 # Init/Bot Info
 @bot.event
 async def on_ready():
+    channel = bot.get_channel(BOTCOMMAND)
+    await channel.send("Beep Boop")
     if not send.is_running():
         send.start()
     if not task_scheduler.is_running():
