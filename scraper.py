@@ -14,14 +14,32 @@ def parse_park(park):
             soup = BeautifulSoup(html, 'html.parser')
             
             h4 = soup.find_all('h4')
-            if len(h4) > 0: #Checks if link redirects to a list of parks
+            if len(h4) > 0: # Checks if link redirects to a list of parks
                 url = response.url
                 break
             else:
-                p = soup.find('p')
+                park = park.lower()
+                found = False
                 try:
-                    url = "https://rcdb.com" + p.find('a').get('href')
-                except Exception:
+                    sections = soup.find_all('section')
+                    for section in sections:
+                        h3 = section.find('h3')
+                        if h3 and "Amusement Park" in h3.text:
+                            ps = section.find_all('p')
+                            for p in ps:
+                                if "Too many" in p.text:
+                                    return None 
+                                title = p.find('a')
+                                option_words = title.text.lower().split()
+                                if all(word in option_words for word in park.split()) and not found:
+                                    url = "https://rcdb.com" + title.get('href')
+                                    found = True
+                                    break;
+                        if found:
+                            break
+                    else:
+                        return None
+                except:
                     return None
         
         park_official = soup.find('div', id='feature').find('h1').text
@@ -42,12 +60,13 @@ def parse_park(park):
                     if ride.text in "unknown":
                         continue
                     data.append((ride.text, "ride", "https://rcdb.com" + ride.get('href')))
-        return data
+        return data if data else None
     except Exception:
         # Purposely may reach here if h4[i].text causes exception, meaning there are not open coasters 
         # May be interrupted from above, so return partial reading at best
         return data if data else None
-        
+
+# for debugging purposes    
 def main():
     park = input("Park: ") 
     results = parse_park(park)
