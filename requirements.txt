@@ -2,5 +2,5 @@ discord.py
 python-dotenv
 gspread
 google-auth
-python-dateutil
-pytz
+requests
+beautifulsoup4

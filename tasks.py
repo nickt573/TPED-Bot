@@ -1,37 +1,75 @@
 import gspread
+import os
+import random
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
-import os
 
 IDs = {
     "PRESIDENT": 928901718161391677,
     "VICE PRESIDENT": 343055950229405696,
-    "TREASURER": 232914628177297408,
+    "TREASURER": 1428063807833378896,
     "SECRETARY": 460826614368960512,
-    "HISTORIAN": 699427677383294986,
-    "EVENTS COORDINATOR": 1389031753766666371,
-    "PUBLIC RELATIONS 0": 764647197438246942, # Suta
-    "PUBLIC RELATIONS 1": 699288806129664061 # Grace
+    "MR CHAIR": 699427677383294986,
+    "EVENTS CHAIR": 1389031753766666371,
+    "PR CHAIRS 0": 764647197438246942, # Suta
+    "PR CHAIRS 1": 699288806129664061, # Grace
+    "C&P CHAIRS 0": 1387497255912734883,
+    "C&P CHAIRS 1": 1466939482396819522, # Eliana
+    "FUNDRAISING CHAIR": 1210769211828207676,
+    "PDEV CHAIR": 1248104189427454003
 }
+
+SINGLE_TABS = {
+    "PRESIDENT",
+    "VICE PRESIDENT",
+    "TREASURER",
+    "SECRETARY",
+    "MR CHAIR",
+    "EVENTS CHAIR",
+    "FUNDRAISING CHAIR",
+    "PDEV CHAIR",
+}
+
+TWO_PERSON_TABS = {
+    "PR CHAIRS": ("PR CHAIRS 0", "PR CHAIRS 1"),
+    "C&P Chairs": ("C&P CHAIRS 0", "C&P CHAIRS 1"),
+}
+
+EVERYONE_TAB = "EVERYONE"
+PIE_TAB = "🥧"
+
+PIE_HEADER_TO_ROLES = {
+    "president": ["PRESIDENT"],
+    "vice president": ["VICE PRESIDENT"],
+    "treasurer": ["TREASURER"],
+    "secretary": ["SECRETARY"],
+    "member relations": ["MR CHAIR"],
+    "events chair": ["EVENTS CHAIR"],
+    "public relations": ["PR CHAIRS 0", "PR CHAIRS 1"],
+    "competitions and projects": ["C&P CHAIRS 0", "C&P CHAIRS 1"],
+    "fundraising chair": ["FUNDRAISING CHAIR"],
+    "professional development": ["PDEV CHAIR"],
+}
+
+DONE = {"COMPLETED", "DISMISSED"}
+WEEKLY_DUE = "Next Meeting"
+TZ = ZoneInfo("America/New_York")
 
 class Task:
     def __init__(self, title, due_date, task_type, status):
         self.title = title
-        self.due_date = due_date   # date or None
+        self.due_date = due_date   # raw sheet string or None
         self.task_type = task_type # specific or weekly
         self.status = status
 
 worksheets = None
 
-
-
-
 def init_tasks():
     try:
         SCOPES = [os.getenv("SCOPES")]
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))  
-        JSON_PATH = os.path.join(BASE_DIR, os.getenv("JSON")) 
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        JSON_PATH = os.path.join(BASE_DIR, os.getenv("JSON"))
         creds = Credentials.from_service_account_file(
             JSON_PATH,
             scopes=SCOPES
@@ -45,193 +83,142 @@ def init_tasks():
     except Exception as e:
         print(f"Failed to parse tasks sheet, {e}")
 
-def get_pie(sp_tasks, wk_tasks):
-    pie = {}
+def _make_task(title, due, status, task_type):
+    title = title.strip()
+    if not title or title == "--":
+        return None
+    if status.strip() in DONE:
+        return None
+    due = due.strip()
+    if due in ("", "--"):
+        due = None
+    return Task(title, due, task_type, status.strip())
 
-    init_tasks()
-    ws = worksheets[8]
-    role = ws.title
+def _parse_single(rows):
+    specifics = []
+    weeklies = []
+    for row in rows[1:]:
+        while len(row) < 5:
+            row.append("")
+        specific = _make_task(row[0], row[1], row[2], "specific")
+        if specific:
+            specifics.append(specific)
+        weekly = _make_task(row[3], WEEKLY_DUE, row[4], "weekly")
+        if weekly:
+            weeklies.append(weekly)
+    return specifics + weeklies
 
-    try:
-        rows = ws.get_all_values()
-    except Exception as e:
-        print(f"Failed to read tab {role}: {e}")
-        return {}
-
-    if not rows or len(rows) < 2 or role != "🥧":
-        print("Tab is empty or has no data rows.")
-        return {}
-
-    row = rows[1]
-    for r, k in zip(row[:7], IDs.keys()):
-        pie[k] = int(r)
-        if k == "PUBLIC RELATIONS 0":
-            pie["PUBLIC RELATIONS 1"] = int(r)
-
-    rv = {}
-
-    # Use union of keys so we don’t miss any roles
-    all_roles = set(sp_tasks) | set(wk_tasks) | set(pie)
-
-    for role in all_roles:
-        sp_len = len(sp_tasks.get(role, []))
-        wk_len = len(wk_tasks.get(role, []))
-        pie_val = pie.get(role, 0)
-
-        rv[role] = pie_val + sp_len + wk_len
-
-    return rv
+def _parse_two_person(rows):
+    sp_0, sp_1, wk_0, wk_1 = [], [], [], []
+    for row in rows[2:]:
+        while len(row) < 7:
+            row.append("")
+        due = row[2]
+        sp_status = row[3]
+        wk_status = row[6]
+        for title, out in ((row[0], sp_0), (row[1], sp_1)):
+            t = _make_task(title, due, sp_status, "specific")
+            if t:
+                out.append(t)
+        for title, out in ((row[4], wk_0), (row[5], wk_1)):
+            t = _make_task(title, WEEKLY_DUE, wk_status, "weekly")
+            if t:
+                out.append(t)
+    return sp_0 + wk_0, sp_1 + wk_1
 
 def get_tasks():
-    sp_tasks = {}
-    wk_tasks = {}
+    role_tasks = {}
+    everyone_tasks = []
     init_tasks()
-    for ws in worksheets[1:8]:
-        role = ws.title
+    if not worksheets:
+        return role_tasks, everyone_tasks
+    for ws in worksheets:
+        title = ws.title
         try:
             rows = ws.get_all_values()
         except Exception as e:
-            print(f"Failed to read tab {role}: {e}")
+            print(f"Failed to read tab {title}: {e}")
             continue
-        if not rows or len(rows) < 2:
-            print("Tab is empty or has no data rows.")
+        if not rows:
             continue
+        if title == EVERYONE_TAB:
+            everyone_tasks = _parse_single(rows)
+        elif title in SINGLE_TABS:
+            role_tasks[title] = _parse_single(rows)
+        elif title in TWO_PERSON_TABS:
+            key_0, key_1 = TWO_PERSON_TABS[title]
+            role_tasks[key_0], role_tasks[key_1] = _parse_two_person(rows)
+    return role_tasks, everyone_tasks
 
-        # PR roles
-        if role == "PUBLIC RELATIONS":
-            specific_tasks_0= []
-            specific_tasks_1 = []
-            weekly_tasks_0 = []
-            weekly_tasks_1 = []
+def get_pie(role_tasks):
+    if worksheets is None:
+        init_tasks()
+    base = {}
+    ws = None
+    for w in (worksheets or []):
+        if w.title == PIE_TAB:
+            ws = w
+            break
+    if ws is not None:
+        try:
+            rows = ws.get_all_values()
+        except Exception as e:
+            print(f"Failed to read tab {PIE_TAB}: {e}")
+            rows = []
+        if len(rows) >= 2:
+            headers, values = rows[0], rows[1]
+            for i, header in enumerate(headers):
+                roles = PIE_HEADER_TO_ROLES.get(header.strip().lower())
+                if not roles:
+                    continue
+                value = values[i].strip() if i < len(values) else ""
+                if value == "":
+                    points = 0.0
+                else:
+                    try:
+                        points = float(value)
+                    except ValueError:
+                        points = 3.0
+                for role in roles:
+                    base[role] = points
+    rv = {}
+    for role in set(role_tasks) | set(base):
+        rv[role] = base.get(role, 0) + len(role_tasks.get(role, []))
+    return rv
 
-            for row in rows[2:]:
-                while len(row) < 7:
-                    row.append("")
-                specific_title_0 = row[0].strip()
-                specific_title_1 = row[1].strip()
-                if not specific_title_1:
-                    specific_title_1 = specific_title_0
-                due_date = row[2].strip()
-                if due_date == "--":
-                    due_date = None
-                sp_status = row[3].strip()
-                weekly_title_0 = row[4].strip()
-                weekly_title_1 = row[5].strip()
-                if not weekly_title_1:
-                    weekly_title_1 = weekly_title_0
-                wk_status = row[6].strip()
-                # PR 0 specific and weekly tasks
-                if specific_title_0 and specific_title_0 != "--" and sp_status not in {"COMPLETED", "DISMISSED"}:
-                    specific_tasks_0.append(
-                        Task(
-                            title=specific_title_0,
-                            due_date=due_date,
-                            task_type="specific",
-                            status=sp_status
-                        )
-                )
-                if weekly_title_0 and weekly_title_0 != "--" and wk_status not in {"COMPLETED", "DISMISSED"}:
-                    weekly_tasks_0.append(
-                        Task(
-                            title=weekly_title_0,
-                            due_date=None,
-                            task_type="weekly",
-                            status=wk_status
-                        )
-                )
-                # PR 1 specific and weekly tasks
-                if specific_title_1 and specific_title_1 != "--" and sp_status not in {"COMPLETED", "DISMISSED"}:
-                    specific_tasks_1.append(
-                        Task(
-                            title=specific_title_1,
-                            due_date=due_date,
-                            task_type="specific",
-                            status=sp_status
-                        )
-                )
-                if weekly_title_1 and weekly_title_1 != "--" and wk_status not in {"COMPLETED", "DISMISSED"}:
-                    weekly_tasks_1.append(
-                        Task(
-                            title=weekly_title_1,
-                            due_date=None,
-                            task_type="weekly",
-                            status=wk_status
-                        )
-                ) 
-            sp_tasks["PUBLIC RELATIONS 0"] = specific_tasks_0
-            wk_tasks["PUBLIC RELATIONS 0"] = weekly_tasks_0
-            sp_tasks["PUBLIC RELATIONS 1"] = specific_tasks_1
-            wk_tasks["PUBLIC RELATIONS 1"] = weekly_tasks_1
-        else:
-            # Rest of team tasks
-            specific_tasks = []
-            weekly_tasks = []
-            for row in rows[1:]:
-                while len(row) < 5:
-                    row.append("")
-                specific_title = row[0].strip()
-                due_date = row[1].strip()
-                if due_date == "--":
-                    due_date = None
-                weekly_title = row[3].strip()
-
-                # Specific task
-                status = row[2].strip()
-                if specific_title and status not in {"COMPLETED", "DISMISSED"}:
-                    specific_tasks.append(
-                        Task(
-                            title=specific_title,
-                            due_date=due_date,
-                            task_type="specific",
-                            status=status
-                        )
-                    )
-                # Weekly task
-                status = row[4].strip()
-                if weekly_title and status not in {"COMPLETED", "DISMISSED"}:
-                    weekly_tasks.append(
-                        Task(
-                            title=weekly_title,
-                            due_date=None,
-                            task_type="weekly",
-                            status=status
-                        )
-                    )
-                sp_tasks[role] = specific_tasks
-                wk_tasks[role] = weekly_tasks
-    return sp_tasks, wk_tasks
-
-def parse_day_of(date_str):
-    if date_str == "--":
+def parse_due_date(due):
+    if not due:
+        return None
+    s = due.strip()
+    if s in ("", "--"):
         return None
     try:
-        month_str, day_str = date_str.strip().split("/")
-        month = int(month_str)
-        day = int(day_str)
+        return datetime.fromisoformat(s).date()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    today = datetime.now(TZ).date()
+    try:
+        month_str, day_str = s.split("/")
+        target = date(today.year, int(month_str), int(day_str))
+        if target < today:
+            target = date(today.year + 1, int(month_str), int(day_str))
+        return target
     except Exception:
         return None
 
-    today = datetime.now(ZoneInfo("America/New_York")).date()
-    year = today.year
-    try:
-        target = date(year, month, day)
-    except Exception:
-        return None
+def reminder_due_today(task, meeting_day):
+    today = datetime.now(TZ).date()
+    target = parse_due_date(task.due_date)
+    if target is not None:
+        return target - timedelta(days=1) == today
+    return (today + timedelta(days=1)).weekday() == meeting_day
 
-    # If this year's date already passed, use next year
-    if target < today:
-        target = date(year + 1, month, day)
-    return target
-
-
-def parse_day_before(date_str):
-    date = parse_day_of(date_str)
-    if date is None:
-        return None
-    return date - timedelta(days=1)
-    
 def get_pie_message():
-    import random
     warnings = [
         "Better finish those tasks… or I hope you like pie in the face",
         "Let me know how the pie tastes",

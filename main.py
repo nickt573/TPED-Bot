@@ -4,9 +4,11 @@ import discord.ext.tasks as task_module
 import logging
 from dotenv import load_dotenv
 import os
+import re
 import asyncio
 from database import init_db, add_entry, get_random, get_by_link, delete_entry, get_by_entry, delete_db, idx2week, week2idx
 from scraper import parse_park
+from tasks import get_tasks, get_pie, get_pie_message, reminder_due_today, IDs
 from datetime import time, datetime
 from zoneinfo import ZoneInfo
 
@@ -25,7 +27,9 @@ ECHANNEL = 1434310637936447488 # eboard general chat
 ANNOUNCE = 1434239578457509958 # announcement chat
 EANNOUNCE = 1434589025158824130 # eboard announcement chat
 BOTCOMMAND = 1454957233627594874 # bot commands channel
+TASKS = 1541832182895611986 # eboard task announcement channel
 ME = 699427677383294986 # Nick T. user ID
+EBOARD_ROLE = 1434308646237634701 # E-Board role
 
 # Task reminder configurations
 task_day = 2 # 2 --> Wednesday
@@ -55,24 +59,10 @@ async def on_ready():
     if not task_scheduler.is_running():
         task_scheduler.start()
 
-@bot.event
-async def on_member_join(member):
-    pass
-
-@bot.event
-async def on_message(message):
-    await bot.process_commands(message)
-
 @bot.command()
 @commands.has_role("E-Board")
 async def help(ctx):
-    global task_minute
-    global discussion_time
-    global task_hour
-    global task_day
-    minute_message = str(task_minute)
-    if task_minute < 10:
-        minute_message = "0" + minute_message
+    minute_message = f"{task_minute:02d}"
     await ctx.send(
 f'''
 **Industry Discussion:**
@@ -87,24 +77,37 @@ f'''
         
         *Link*: Optional link, but extremely recommended. Use RCDB.com for links.   
 * Use !mass_add [park] to add a park and all of its rides in one command. Duplicate entries will not be added.
-* Use !pull to force pull an entry. This should typcially only be used for testing or for manually changing the discussion early. The original !pull message will be deleted to hide this.
-* Use !delete [content] to remove an entry if there is a duplicate for example. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
+* Use !pull to force pull an entry. This should typically only be used for testing or for manually changing the discussion early. The actual "!pull" message will be deleted to hide this.
+* Use !delete [content] to remove an entry. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
+
+**E-Board Task Reminders**
+* Tasks with a due date are announced the day before that date. Tasks without a specific date are announced the day before the meeting day (currently {idx2week[task_day]}).
+* Reminders are sent at {task_hour}:{minute_message}.
+* Use !tasks to announce ALL incomplete E-Board tasks.
+* Use !set_task_time [day] [24-hour time] to change the meeting day and reminder time. Use !get_task_time to see what it is currently set to.
+* Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
 
 **Reminder Scheduling:**
 * Use !schedule YYYY-MM-DD HH:MM [message] with the time in 24-hour time to schedule a reminder message.
 
 
-**E-Board Task Reminders**
-* Every {idx2week[task_day]} at {task_hour}:{minute_message}, I will automatically remind E-Board members of their incomplete weekly tasks and tasks due the next day.
-* Additional daily reminders will be sent at {task_hour}:{minute_message} the day before a task is due.
-* Use !tasks to announce ALL incomplete E-Board tasks, including ones with more than 1 day of time remaining. 
-* Use !set_task_time [day] [24-hour time] to change the weekly reminders. Use !get_task_time to see what it is currently set to. 
-* Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
-
 Only members with the E-Board flair will be able to use any of the bot commands, including !help
 ''')
 
 # Roller Coaster Database Management
+async def await_confirmation(ctx, timeout=15):
+    def check(m):
+        return (
+            m.author == ctx.author
+            and m.channel == ctx.channel
+            and m.content.lower().strip() in ["yes", "no"]
+        )
+    try:
+        response = await bot.wait_for("message", check=check, timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+    return response.content.lower().strip() == "yes"
+
 async def add_function(ctx, message, mass=False):
     content, category, link = message
     confirm = f"CONFIRM: You are adding `{content}` as `{category}`"
@@ -130,14 +133,11 @@ async def add_function(ctx, message, mass=False):
         add_entry(content, category, author_id, link)
         return
     
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower().strip() in ["yes", "no"]
-    try:
-        response = await bot.wait_for("message", check=check, timeout=15)
-    except asyncio.TimeoutError:
+    confirmed = await await_confirmation(ctx)
+    if confirmed is None:
         await ctx.send("Confirmation timed out. Entry not added.")
         return
-    if response.content.lower() == "yes":
+    if confirmed:
         add_entry(content, category, author_id, link)
         await ctx.send("Entry added")
     else:
@@ -183,19 +183,27 @@ async def mass_add(ctx, *, message):
     embed.set_footer(text="Confirm with yes/no")
     await ctx.send(embed=embed)
 
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel and m.content.lower().strip() in ["yes", "no"]
-    try:
-        response = await bot.wait_for("message", check=check, timeout=15)
-    except asyncio.TimeoutError:
+    confirmed = await await_confirmation(ctx)
+    if confirmed is None:
         await ctx.send("Confirmation timed out. Entries not added.")
         return
-    if response.content.lower() == "yes":
+    if confirmed:
         for item in result:
             await add_function(ctx, item, mass=True)
         await ctx.send("New entries successfully added")
     else:
         await ctx.send("Mass adding cancelled.")
+
+def format_entry(content):
+    category = content['category']
+    if category != 'discussion' and category != 'trivia':
+        label = category.capitalize() + ' discussion'
+    else:
+        label = category.capitalize()
+    message = f"**{label}:** {content['content']}"
+    if content['link']:
+        message += f" {content['link']}"
+    return message
 
 @bot.command()
 @commands.has_role("E-Board")
@@ -203,16 +211,7 @@ async def pull(ctx):
     await ctx.message.delete()
     content = get_random()
     if content:
-        category = content['category']
-        if category != 'discussion' and category != 'trivia':
-            category = category.capitalize()
-            category += ' discussion'
-        else:
-            category = category.capitalize()
-        message = f"**{category}:** {content['content']}"
-        if content['link']:
-            message += f" {content['link']}"
-        await ctx.send(message)
+        await ctx.send(format_entry(content))
     else:
         await ctx.send("Database empty")
 
@@ -222,10 +221,7 @@ async def send():
     if channel and disc_enabled:
         content = get_random()
         if content:
-            msg = f"**{content['category'].capitalize()} discussion:** {content['content']}"
-            if content['link']:
-                msg += f" {content['link']}"
-            await channel.send(msg)
+            await channel.send(format_entry(content))
 
 @bot.command()
 @commands.has_role("E-Board")
@@ -233,7 +229,7 @@ async def get_disc_time(ctx):
     global discussion_time
     reminder = f"Current interval is {discussion_time / 24} day(s). Use !set_disc_time [interval] to change this."
     if not disc_enabled:
-        reminder += " Note that task reminders are currently disabled."
+        reminder += " Note that automatic discussion is currently disabled."
     await ctx.send(reminder)
 
 @bot.command()
@@ -249,17 +245,8 @@ async def set_disc_time(ctx, *, message):
     send.change_interval(hours=discussion_time)
     reminder = f"Interval has been updated to {discussion_time / 24} day(s)."
     if not disc_enabled:
-        reminder += " Note that task reminders are currently disabled."
+        reminder += " Note that automatic discussion is currently disabled."
     await ctx.send(reminder)
-
-'''@bot.command()
-@commands.has_role("E-Board")
-async def status(ctx):
-    global disc_enabled
-    if(disc_enabled):
-        await ctx.send("Discussion is currently enabled")
-    else:
-        await ctx.send("Discussion is currently disabled")'''
 
 @bot.command()
 @commands.has_role("E-Board")
@@ -287,18 +274,11 @@ async def delete(ctx, *, message):
     if(content['link']):
         confirmation_message += f", {content['link']}"
     await ctx.send(f"CONFIRM: You are deleting {confirmation_message}. This cannot be undone `[yes/no]`")
-    def check(m):
-        return (
-            m.author == ctx.author
-            and m.channel == ctx.channel
-            and m.content.lower().strip() in ["yes", "no"]
-        )
-    try:
-        response = await bot.wait_for("message", check=check, timeout=15)
-    except asyncio.TimeoutError:
+    confirmed = await await_confirmation(ctx)
+    if confirmed is None:
         await ctx.send("Confirmation timed out. Entry not deleted.")
         return
-    if response.content.lower() == "yes":
+    if confirmed:
         delete_entry(message)
         await ctx.send(f"`{content['content']}` has been deleted.")
     else:
@@ -308,18 +288,11 @@ async def delete(ctx, *, message):
 @commands.has_role("E-Board")
 async def wipe(ctx):
     await ctx.send("**WARNING:** You are about to delete ALL entries. This cannot be undone. Type `yes` to confirm.")
-    def check(m):
-        return (
-            m.author == ctx.author
-            and m.channel == ctx.channel
-            and m.content.lower().strip() in ["yes", "no"]
-        )
-    try:
-        response = await bot.wait_for("message", check=check, timeout=30)
-    except asyncio.TimeoutError:
+    confirmed = await await_confirmation(ctx, timeout=30)
+    if confirmed is None:
         await ctx.send("Confirmation timed out. No entries were deleted.")
         return
-    if response.content.lower().strip() == "yes":
+    if confirmed:
         delete_db()
         await ctx.send("All entries have been deleted.")
     else:
@@ -379,114 +352,78 @@ async def schedule(ctx, date: str, time: str, *, message):
 
 # E-Board Tasks
 '''
-Desired task sequencing:
-1. Specific tasks get announced a day before they're due
-2. Weekly tasks get announced at the set time before E-Board meeting. 
-3. !tasks gets all with pie message included
+Reminder protocol:
+1. A task with a due date is reminded the day before that date.
+2. A task without a date (Next Meeting, ASAP, --, weekly) is reminded the day before the meeting day.
+3. EVERYONE tab tasks mention the E-Board role and hide status.
+4. !tasks lists all incomplete tasks with pie messages included.
 '''
-from tasks import get_tasks, get_pie, get_pie_message, parse_day_before, IDs
+
+def format_task(task, show_status=True):
+    line = f"• **{task.title}**"
+    if task.due_date:
+        line += f" — Due: {task.due_date}"
+    if show_status:
+        line += f" — Status: {task.status}"
+    return line
+
+async def announce_tasks(channel, role_tasks, everyone_tasks, pie):
+    if everyone_tasks and EBOARD_ROLE:
+        message_content = "\n".join(format_task(task, show_status=False) for task in everyone_tasks)
+        embed = discord.Embed(description=message_content, color=discord.Color.gold())
+        await channel.send(content=f"<@&{EBOARD_ROLE}>", embed=embed)
+    for role in IDs:
+        tasklist = role_tasks.get(role, [])
+        if not tasklist:
+            continue
+        message_content = "\n".join(format_task(task) for task in tasklist)
+        if pie.get(role, 0) >= 3:
+            message_content += "\n" + "🥧" + get_pie_message() + "🥧"
+        embed = discord.Embed(description=message_content, color=discord.Color.gold())
+        await channel.send(content=f"<@{IDs[role]}>", embed=embed)
 
 @bot.command()
 @commands.has_role("E-Board")
 async def tasks(ctx):
-    channel = bot.get_channel(EANNOUNCE)
-    sp_tasks, wk_tasks = get_tasks()
-    if channel:
-        for role in IDs:
-            mention = f"<@{IDs[role]}>" 
-            lines = []
-            if role in sp_tasks:
-                for task in sp_tasks[role]:
-                    if task.due_date:
-                        lines.append(
-                                f"• **{task.title}** — Due: {task.due_date} — Status: {task.status}"
-                            )
-                    else:
-                        lines.append(
-                                f"• **{task.title}** — Status: {task.status}"
-                            )
-            if role in wk_tasks:
-                for task in wk_tasks[role]:
-                    if task.due_date:
-                        lines.append(
-                                f"• **{task.title}** — Due: {task.due_date} — Status: {task.status}"
-                            )
-                    else:
-                        lines.append(
-                                f"• **{task.title}** — Status: {task.status}"
-                            )
-            if lines:
-                message_content = "\n".join(lines)
-                if get_pie(sp_tasks, wk_tasks)[role] >= 3:
-                    pie_message = "🥧" + get_pie_message() + "🥧"
-                    message_content += "\n" + pie_message
-                embed = discord.Embed(
-                    description=f"{message_content}",
-                    color=discord.Color.gold())
-                await channel.send(content=mention, embed=embed)
+    channel = bot.get_channel(TASKS)
+    if not channel:
+        return
+    role_tasks, everyone_tasks = get_tasks()
+    pie = get_pie(role_tasks)
+    await announce_tasks(channel, role_tasks, everyone_tasks, pie)
 
 @task_module.loop(time=time(hour=task_hour, minute=task_minute, tzinfo=ZoneInfo("America/New_York")))
 async def task_scheduler():
     if not task_enabled:
         return
-    now = datetime.now(ZoneInfo("America/New_York"))
-    today = now.date()
-    channel = bot.get_channel(EANNOUNCE)
-    if channel:
-        sp_tasks, wk_tasks = get_tasks()
-        for role in IDs:
-            mention = f"<@{IDs[role]}>" 
-            sp_lines = []
-            wk_lines = []
-            if now.weekday() == task_day:
-                if role in wk_tasks:
-                    for task in wk_tasks[role]:
-                        if task.due_date:
-                            wk_lines.append(
-                                    f"• **{task.title}** — Due: {task.due_date} — Status: {task.status}"
-                                )
-                        else:
-                            wk_lines.append(
-                                    f"• **{task.title}** — Status: {task.status}"
-                                )
-            if role in sp_tasks:
-                    for task in sp_tasks[role]:
-                        target = parse_day_before(task.due_date)
-                        if target is not None and target == today:
-                            sp_lines.append(
-                                    f"• **{task.title}** — Due: {task.due_date} — Status: {task.status}"
-                                )
-            lines = sp_lines + wk_lines
-            if lines:
-                message = mention + "\n" + "\n".join(lines)
-                await channel.send(message)
+    channel = bot.get_channel(TASKS)
+    if not channel:
+        return
+    role_tasks, everyone_tasks = get_tasks()
+    pie = get_pie(role_tasks)
+    due_role = {role: [task for task in tasklist if reminder_due_today(task, task_day)]
+                for role, tasklist in role_tasks.items()}
+    due_everyone = [task for task in everyone_tasks if reminder_due_today(task, task_day)]
+    await announce_tasks(channel, due_role, due_everyone, pie)
 
 @bot.command()
 @commands.has_role("E-Board")
 async def get_task_time(ctx):
-    minute_message = str(task_minute)
-    if task_minute < 10:
-        minute_message = "0" + minute_message
+    minute_message = f"{task_minute:02d}"
     enabled_message = "enabled" if task_enabled else "disabled"
-    await ctx.send(f"Automatic reminders are currently {enabled_message}. Current weekly task reminder time is set to {idx2week[task_day]}. All task reminders will be announced daily at {task_hour}:{minute_message}. Use !set_task_time [day] [24-hour time] to change this.")
+    await ctx.send(f"Automatic reminders are currently {enabled_message}. The meeting day is set to {idx2week[task_day]}; undated tasks are reminded the day before it and dated tasks the day before their due date. Reminders are sent at {task_hour}:{minute_message}. Use !set_task_time [day] [24-hour time] to change the meeting day and reminder time.")
 
 @bot.command()
 @commands.has_role("E-Board")
 async def set_task_time(ctx, *, message):
-    import re
-
-    VALID_DAYS = {
-        "Monday", "Tuesday", "Wednesday",
-        "Thursday", "Friday", "Saturday", "Sunday"
-    }
-
     parts = message.strip().split()
     if len(parts) != 2:
         await ctx.send("Format: !set_task_time [day] [24-hour time]")
         return
     day, time_str = parts
+    day = day.strip().title()
     if day not in week2idx:
-        await ctx.send("Invalid weekday. Must be capitalized (e.g., Wednesday).")
+        await ctx.send("Invalid weekday. Use a day name like Wednesday.")
         return
     match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", time_str)
     if not match:
@@ -497,9 +434,7 @@ async def set_task_time(ctx, *, message):
     task_day = week2idx[day]
     task_hour = int(match.group(1))
     task_minute = int(match.group(2))
-    minute_message = str(task_minute)
-    if task_minute < 10:
-        minute_message = "0" + minute_message
+    minute_message = f"{task_minute:02d}"
 
     new_time = time(
         hour=task_hour,
@@ -507,8 +442,10 @@ async def set_task_time(ctx, *, message):
         tzinfo=ZoneInfo("America/New_York")
     )
     task_scheduler.change_interval(time=new_time)
-    
-    reminder = f"Automatic weekly task reminder time is set to {idx2week[task_day]}. All task reminders will be announced daily at {task_hour}:{minute_message}."
+    if task_scheduler.is_running():
+        task_scheduler.restart()
+
+    reminder = f"Meeting day is set to {idx2week[task_day]}. Reminders are sent at {task_hour}:{minute_message}."
     if not task_enabled:
         reminder += " Note that task reminders are currently disabled."
     await ctx.send(reminder)
@@ -517,16 +454,14 @@ async def set_task_time(ctx, *, message):
 async def enable_tasks(ctx):
     global task_enabled 
     task_enabled = True
-    minute_message = str(task_minute)
-    if task_minute < 10:
-        minute_message = "0" + minute_message
-    await ctx.send(f"Automatic weekly task reminders are now enabled for {idx2week[task_day]}. All task reminders will be announced daily at {task_hour}:{minute_message}.")
+    minute_message = f"{task_minute:02d}"
+    await ctx.send(f"Automatic task reminders are now enabled. Meeting day is {idx2week[task_day]} and reminders are sent at {task_hour}:{minute_message}.")
 
 @bot.command()
 @commands.has_role("E-Board")
 async def disable_tasks(ctx):
     global task_enabled 
     task_enabled = False
-    await ctx.send(f"Automatic task remidners are now disabled.")
+    await ctx.send("Automatic task reminders are now disabled.")
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

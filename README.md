@@ -10,17 +10,17 @@ Use !add [content], [category], [optional link] to add to the database.
       Content: The actual ride name, trivia fact, manufacturer, ride element, etc.
       Category: Any of the following: park, manufacturer, ride, element, model, trivia, or discussion. Do not diverge from this list.
       Link: Optional link, but extremely recommended. Use RCDB.com for links.
-Use !pull to force pull an entry. This should typcially only be used for testing or for manually changing the discussion early. The original !pull message will be deleted to hide this.
-Use !delete [content] to remove an entry if there is a duplicate for example. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
+Use !pull to force pull an entry. This should typically only be used for testing or for manually changing the discussion early. The actual "!pull" message will be deleted to hide this.
+Use !delete [content] to remove an entry. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
 
 Reminder Scheduling:
 Use !schedule YYYY-MM-DD HH:MM [message] with the time in 24-hour time to schedule a reminder message.
 
 E-Board Task Reminders
-Every Wednesday at 16:00, I will automatically remind E-Board members of their incomplete weekly tasks and tasks due the next day.
-Additional daily reminders will be sent at 16:00 the day before a task is due.
-Use !tasks to announce ALL incomplete E-Board tasks, including ones with more than 1 day of time remaining.
-Use !set_task_time [day] [24-hour time] to change the weekly reminders. Use !get_task_time to see what it is currently set to.
+Tasks with a due date are announced the day before that date. Tasks without a specific date are announced the day before the meeting day (default Wednesday). Reminders are sent at 16:00.
+EVERYONE-tab tasks are announced to the E-Board role with status hidden.
+Use !tasks to announce ALL incomplete E-Board tasks.
+Use !set_task_time [day] [24-hour time] to change the meeting day and reminder time. Use !get_task_time to see what it is currently set to.
 Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
 
 File System:

@@ -34,7 +34,7 @@ def parse_park(park):
                                 if all(word in option_words for word in park.split()) and not found:
                                     url = "https://rcdb.com" + title.get('href')
                                     found = True
-                                    break;
+                                    break
                         if found:
                             break
                     else:
@@ -57,7 +57,7 @@ def parse_park(park):
                 ride_table = soup.find('div', class_='stdtbl rer').find('tbody').find_all('tr')
                 for tr in ride_table:
                     ride = tr.find_all('td')[1].find('a')
-                    if ride.text in "unknown":
+                    if ride.text.strip().lower() == "unknown":
                         continue
                     data.append((ride.text, "ride", "https://rcdb.com" + ride.get('href')))
         return data if data else None
