@@ -24,12 +24,17 @@ class Task:
 
 worksheets = None
 
+
+
+
 def init_tasks():
     try:
         SCOPES = [os.getenv("SCOPES")]
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))  
+        JSON_PATH = os.path.join(BASE_DIR, os.getenv("JSON")) 
         creds = Credentials.from_service_account_file(
-        os.getenv("JSON"),
-        scopes=SCOPES
+            JSON_PATH,
+            scopes=SCOPES
         )
         client = gspread.authorize(creds)
         spreadsheet = client.open_by_url(

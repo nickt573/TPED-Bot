@@ -32,7 +32,9 @@ task_minute = 0
 task_enabled = False
 
 # Permissions and handlers
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+log_path = os.path.join(BASE_DIR, 'discord.log')
+handler = logging.FileHandler(filename=log_path, encoding='utf-8', mode='w')
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
