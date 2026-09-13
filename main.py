@@ -31,6 +31,20 @@ TASKS = 1541832182895611986 # eboard task announcement channel
 ME = 699427677383294986 # Nick T. user ID
 EBOARD_ROLE = 1434308646237634701 # E-Board role
 
+EVERYONE_CHANNEL = 1541832182895611986
+ROLE_CHANNELS = {
+    "PRESIDENT": 1544472006739628114,
+    "VICE PRESIDENT": 1544472042663841823,
+    "TREASURER": 1544472084871127151,
+    "SECRETARY": 1544472123211522159,
+    "MR CHAIR": 1544472572291448902,
+    "EVENTS CHAIR": 1544472196557312040,
+    "PR CHAIRS": 1544472698355327096,
+    "C&P CHAIRS": 1544473238955098203,
+    "FUNDRAISING CHAIR": 1544472975267340308,
+    "PDEV CHAIR": 1544473030040883312,
+}
+
 # Task reminder configurations
 task_day = 2 # 2 --> Wednesday
 task_hour = 16 # 4PM
@@ -367,44 +381,44 @@ def format_task(task, show_status=True):
         line += f" — Status: {task.status}"
     return line
 
-async def announce_tasks(channel, role_tasks, everyone_tasks, pie):
+async def announce_tasks(role_tasks, everyone_tasks, pie):
     if everyone_tasks and EBOARD_ROLE:
-        message_content = "\n".join(format_task(task, show_status=False) for task in everyone_tasks)
-        embed = discord.Embed(description=message_content, color=discord.Color.gold())
-        await channel.send(content=f"<@&{EBOARD_ROLE}>", embed=embed)
+        channel = bot.get_channel(EVERYONE_CHANNEL)
+        if channel:
+            message_content = "\n".join(format_task(task, show_status=False) for task in everyone_tasks)
+            embed = discord.Embed(description=message_content, color=discord.Color.gold())
+            await channel.send(content=f"<@&{EBOARD_ROLE}>", embed=embed)
     for role in IDs:
         tasklist = role_tasks.get(role, [])
         if not tasklist:
+            continue
+        channel = bot.get_channel(ROLE_CHANNELS.get(role, TASKS))
+        if not channel:
             continue
         message_content = "\n".join(format_task(task) for task in tasklist)
         if pie.get(role, 0) >= 3:
             message_content += "\n" + "🥧" + get_pie_message() + "🥧"
         embed = discord.Embed(description=message_content, color=discord.Color.gold())
-        await channel.send(content=f"<@{IDs[role]}>", embed=embed)
+        mentions = " ".join(f"<@{user_id}>" for user_id in IDs[role])
+        await channel.send(content=mentions, embed=embed)
 
 @bot.command()
 @commands.has_role("E-Board")
 async def tasks(ctx):
-    channel = bot.get_channel(TASKS)
-    if not channel:
-        return
     role_tasks, everyone_tasks = get_tasks()
     pie = get_pie(role_tasks)
-    await announce_tasks(channel, role_tasks, everyone_tasks, pie)
+    await announce_tasks(role_tasks, everyone_tasks, pie)
 
 @task_module.loop(time=time(hour=task_hour, minute=task_minute, tzinfo=ZoneInfo("America/New_York")))
 async def task_scheduler():
     if not task_enabled:
-        return
-    channel = bot.get_channel(TASKS)
-    if not channel:
         return
     role_tasks, everyone_tasks = get_tasks()
     pie = get_pie(role_tasks)
     due_role = {role: [task for task in tasklist if reminder_due_today(task, task_day)]
                 for role, tasklist in role_tasks.items()}
     due_everyone = [task for task in everyone_tasks if reminder_due_today(task, task_day)]
-    await announce_tasks(channel, due_role, due_everyone, pie)
+    await announce_tasks(due_role, due_everyone, pie)
 
 @bot.command()
 @commands.has_role("E-Board")

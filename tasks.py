@@ -6,18 +6,16 @@ from zoneinfo import ZoneInfo
 from google.oauth2.service_account import Credentials
 
 IDs = {
-    "PRESIDENT": 928901718161391677,
-    "VICE PRESIDENT": 343055950229405696,
-    "TREASURER": 1428063807833378896,
-    "SECRETARY": 460826614368960512,
-    "MR CHAIR": 699427677383294986,
-    "EVENTS CHAIR": 1389031753766666371,
-    "PR CHAIRS 0": 764647197438246942, # Suta
-    "PR CHAIRS 1": 699288806129664061, # Grace
-    "C&P CHAIRS 0": 1387497255912734883,
-    "C&P CHAIRS 1": 1466939482396819522, # Eliana
-    "FUNDRAISING CHAIR": 1210769211828207676,
-    "PDEV CHAIR": 1248104189427454003
+    "PRESIDENT": [928901718161391677],
+    "VICE PRESIDENT": [343055950229405696],
+    "TREASURER": [1428063807833378896],
+    "SECRETARY": [460826614368960512],
+    "MR CHAIR": [699427677383294986],
+    "EVENTS CHAIR": [1389031753766666371],
+    "PR CHAIRS": [764647197438246942, 699288806129664061], # Suta, Grace
+    "C&P CHAIRS": [1387497255912734883, 1466939482396819522], # Lily, Eliana
+    "FUNDRAISING CHAIR": [1210769211828207676],
+    "PDEV CHAIR": [1248104189427454003],
 }
 
 SINGLE_TABS = {
@@ -32,8 +30,8 @@ SINGLE_TABS = {
 }
 
 TWO_PERSON_TABS = {
-    "PR CHAIRS": ("PR CHAIRS 0", "PR CHAIRS 1"),
-    "C&P Chairs": ("C&P CHAIRS 0", "C&P CHAIRS 1"),
+    "PR CHAIRS": "PR CHAIRS",
+    "C&P Chairs": "C&P CHAIRS",
 }
 
 EVERYONE_TAB = "EVERYONE"
@@ -46,8 +44,8 @@ PIE_HEADER_TO_ROLES = {
     "secretary": ["SECRETARY"],
     "member relations": ["MR CHAIR"],
     "events chair": ["EVENTS CHAIR"],
-    "public relations": ["PR CHAIRS 0", "PR CHAIRS 1"],
-    "competitions and projects": ["C&P CHAIRS 0", "C&P CHAIRS 1"],
+    "public relations": ["PR CHAIRS"],
+    "competitions and projects": ["C&P CHAIRS"],
     "fundraising chair": ["FUNDRAISING CHAIR"],
     "professional development": ["PDEV CHAIR"],
 }
@@ -109,22 +107,22 @@ def _parse_single(rows):
     return specifics + weeklies
 
 def _parse_two_person(rows):
-    sp_0, sp_1, wk_0, wk_1 = [], [], [], []
+    specifics, weeklies = [], []
     for row in rows[2:]:
         while len(row) < 7:
             row.append("")
         due = row[2]
         sp_status = row[3]
         wk_status = row[6]
-        for title, out in ((row[0], sp_0), (row[1], sp_1)):
+        for title in (row[0], row[1]):
             t = _make_task(title, due, sp_status, "specific")
             if t:
-                out.append(t)
-        for title, out in ((row[4], wk_0), (row[5], wk_1)):
+                specifics.append(t)
+        for title in (row[4], row[5]):
             t = _make_task(title, WEEKLY_DUE, wk_status, "weekly")
             if t:
-                out.append(t)
-    return sp_0 + wk_0, sp_1 + wk_1
+                weeklies.append(t)
+    return specifics + weeklies
 
 def get_tasks():
     role_tasks = {}
@@ -146,8 +144,7 @@ def get_tasks():
         elif title in SINGLE_TABS:
             role_tasks[title] = _parse_single(rows)
         elif title in TWO_PERSON_TABS:
-            key_0, key_1 = TWO_PERSON_TABS[title]
-            role_tasks[key_0], role_tasks[key_1] = _parse_two_person(rows)
+            role_tasks[TWO_PERSON_TABS[title]] = _parse_two_person(rows)
     return role_tasks, everyone_tasks
 
 def get_pie(role_tasks):
