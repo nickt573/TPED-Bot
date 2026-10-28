@@ -10,6 +10,7 @@ from database import init_db, add_entry, get_random, get_by_link, delete_entry, 
 from scraper import parse_park
 from tasks import get_tasks, get_pie, get_pie_message, reminder_due_today, IDs
 from datetime import time, datetime
+from config import load_config, save_config
 from zoneinfo import ZoneInfo
 
 # Environment
@@ -51,6 +52,44 @@ task_hour = 16 # 4PM
 task_minute = 0
 task_enabled = False
 
+# Competition team reminder configurations
+COMPS = {
+    "rec": {"name": "Rec", "role": 1552764400841265292, "channel": 1552763957054541905, "day": None, "hour": None, "minute": None},
+    "rep_new": {"name": "Rep New", "role": 1552764595662360707, "channel": 1555013490144448553, "day": None, "hour": None, "minute": None},
+    "rep_cont": {"name": "Rep Cont", "role": 1552764492876877975, "channel": 1555013393226932234, "day": None, "hour": None, "minute": None},
+}
+COMP_DAY_OF_HOUR = 12 # day-of reminder goes out at 12:00
+comps_enabled = False
+comps_sent = set() # (team, reminder type, date) so a reminder never goes out twice
+scheduled_messages = [] # [{"time": ISO datetime, "message": str}]
+
+# Load saved settings (config.json) over the defaults above
+saved = load_config()
+discussion_time = saved.get("discussion_time", discussion_time)
+disc_enabled = saved.get("disc_enabled", disc_enabled)
+task_day = saved.get("task_day", task_day)
+task_hour = saved.get("task_hour", task_hour)
+task_minute = saved.get("task_minute", task_minute)
+task_enabled = saved.get("task_enabled", task_enabled)
+comps_enabled = saved.get("comps_enabled", comps_enabled)
+for key, meeting in saved.get("comps", {}).items():
+    if key in COMPS:
+        COMPS[key].update({k: meeting.get(k) for k in ("day", "hour", "minute")})
+scheduled_messages = saved.get("scheduled", [])
+
+def save_settings():
+    save_config({
+        "discussion_time": discussion_time,
+        "disc_enabled": disc_enabled,
+        "task_day": task_day,
+        "task_hour": task_hour,
+        "task_minute": task_minute,
+        "task_enabled": task_enabled,
+        "comps_enabled": comps_enabled,
+        "comps": {key: {k: team[k] for k in ("day", "hour", "minute")} for key, team in COMPS.items()},
+        "scheduled": scheduled_messages,
+    })
+
 # Permissions and handlers
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 log_path = os.path.join(BASE_DIR, 'discord.log')
@@ -72,11 +111,15 @@ async def on_ready():
         send.start()
     if not task_scheduler.is_running():
         task_scheduler.start()
+    if not comp_scheduler.is_running():
+        comp_scheduler.start()
+    restore_scheduled()
 
 @bot.command()
 @commands.has_role("E-Board")
 async def help(ctx):
     minute_message = f"{task_minute:02d}"
+    # Split in two: Discord rejects messages over 2000 characters
     await ctx.send(
 f'''
 **Industry Discussion:**
@@ -93,13 +136,18 @@ f'''
 * Use !mass_add [park] to add a park and all of its rides in one command. Duplicate entries will not be added.
 * Use !pull to force pull an entry. This should typically only be used for testing or for manually changing the discussion early. The actual "!pull" message will be deleted to hide this.
 * Use !delete [content] to remove an entry. Spelling must be exact. Use !wipe to delete the entire database. This CANNOT be undone!
-
-**E-Board Task Reminders**
+''')
+    await ctx.send(
+f'''
+**Task Reminders**
 * Tasks with a due date are announced the day before that date. Tasks without a specific date are announced the day before the meeting day (currently {idx2week[task_day]}).
 * Reminders are sent at {task_hour}:{minute_message}.
 * Use !tasks to announce ALL incomplete E-Board tasks.
 * Use !set_task_time [day] [24-hour time] to change the meeting day and reminder time. Use !get_task_time to see what it is currently set to.
 * Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
+* Comp teams are reminded the day before their meeting at the meeting time, and again at 12:00 the day of.
+* Use !set_rec, !set_rep_new, or !set_rep_cont [day] [24-hour time] to set each team's meeting. Use !get_comps to see them.
+* Use !enable_comps or !disable_comps to enable/disable comp team reminders.
 
 **Reminder Scheduling:**
 * Use !schedule YYYY-MM-DD HH:MM [message] with the time in 24-hour time to schedule a reminder message.
@@ -257,6 +305,7 @@ async def set_disc_time(ctx, *, message):
     global discussion_time
     discussion_time = days * 24
     send.change_interval(hours=discussion_time)
+    save_settings()
     reminder = f"Interval has been updated to {discussion_time / 24} day(s)."
     if not disc_enabled:
         reminder += " Note that automatic discussion is currently disabled."
@@ -267,6 +316,7 @@ async def set_disc_time(ctx, *, message):
 async def disable_disc(ctx):
     global disc_enabled
     disc_enabled = False
+    save_settings()
     await ctx.send("Discussion disabled")
 
 @bot.command()
@@ -274,6 +324,7 @@ async def disable_disc(ctx):
 async def enable_disc(ctx):
     global disc_enabled
     disc_enabled = True
+    save_settings()
     await ctx.send("Discussion enabled")
 
 @bot.command()
@@ -355,12 +406,34 @@ async def schedule(ctx, date: str, time: str, *, message):
         await ctx.send("That time is in the past.")
         return
     
+    entry = {"time": target_dt.isoformat(), "message": message}
+    scheduled_messages.append(entry)
+    save_settings()
     await ctx.send("Event successfully scheduled")
-    await asyncio.sleep(delay)
+    asyncio.create_task(run_scheduled(entry))
 
+async def run_scheduled(entry):
+    target_dt = datetime.fromisoformat(entry["time"])
+    delay = (target_dt - datetime.now(ZoneInfo("America/New_York"))).total_seconds()
+    if delay > 0:
+        await asyncio.sleep(delay)
+    if entry not in scheduled_messages:
+        return
     channel = bot.get_channel(EANNOUNCE)
     if channel:
-        await channel.send(message)
+        await channel.send(entry["message"])
+    scheduled_messages.remove(entry)
+    save_settings()
+
+restored = False
+def restore_scheduled():
+    # Restart saved reminders after a reboot. Any that came due while the bot was down are sent right away.
+    global restored
+    if restored:
+        return
+    restored = True
+    for entry in list(scheduled_messages):
+        asyncio.create_task(run_scheduled(entry))
 
 
 
@@ -456,6 +529,7 @@ async def set_task_time(ctx, *, message):
         tzinfo=ZoneInfo("America/New_York")
     )
     task_scheduler.change_interval(time=new_time)
+    save_settings()
     if task_scheduler.is_running():
         task_scheduler.restart()
 
@@ -468,6 +542,7 @@ async def set_task_time(ctx, *, message):
 async def enable_tasks(ctx):
     global task_enabled 
     task_enabled = True
+    save_settings()
     minute_message = f"{task_minute:02d}"
     await ctx.send(f"Automatic task reminders are now enabled. Meeting day is {idx2week[task_day]} and reminders are sent at {task_hour}:{minute_message}.")
 
@@ -476,6 +551,123 @@ async def enable_tasks(ctx):
 async def disable_tasks(ctx):
     global task_enabled 
     task_enabled = False
+    save_settings()
     await ctx.send("Automatic task reminders are now disabled.")
+
+# Competition Team Reminders
+def format_12hr(hour, minute):
+    suffix = "AM" if hour < 12 else "PM"
+    return f"{hour % 12 or 12}:{minute:02d} {suffix}"
+
+def comp_summary(key):
+    team = COMPS[key]
+    if team["day"] is None:
+        return f"{team['name']}: not set"
+    return f"{team['name']}: {idx2week[team['day']]} at {format_12hr(team['hour'], team['minute'])}"
+
+async def set_comp(ctx, key, message):
+    command = f"!set_{key}"
+    parts = message.strip().split() if message else []
+    if len(parts) != 2:
+        await ctx.send(f"Format: {command} [day] [24-hour time]")
+        return
+    day, time_str = parts
+    day = day.strip().title()
+    if day not in week2idx:
+        await ctx.send("Invalid weekday. Use a day name like Wednesday.")
+        return
+    match = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)", time_str)
+    if not match:
+        await ctx.send("Time must be 24-hour HH:MM (e.g., 17:30).")
+        return
+
+    team = COMPS[key]
+    team["day"] = week2idx[day]
+    team["hour"] = int(match.group(1))
+    team["minute"] = int(match.group(2))
+    save_settings()
+
+    reply = f"{comp_summary(key)}."
+    if team["hour"] < COMP_DAY_OF_HOUR or (team["hour"] == COMP_DAY_OF_HOUR and team["minute"] == 0):
+        reply += " Since the meeting is at or before 12:00, only the day-before reminder will be sent."
+    if not comps_enabled:
+        reply += " Note that competition team reminders are currently disabled."
+    await ctx.send(reply)
+
+@bot.command()
+@commands.has_role("E-Board")
+async def set_rec(ctx, *, message=""):
+    await set_comp(ctx, "rec", message)
+
+@bot.command()
+@commands.has_role("E-Board")
+async def set_rep_new(ctx, *, message=""):
+    await set_comp(ctx, "rep_new", message)
+
+@bot.command()
+@commands.has_role("E-Board")
+async def set_rep_cont(ctx, *, message=""):
+    await set_comp(ctx, "rep_cont", message)
+
+@bot.command()
+@commands.has_role("E-Board")
+async def get_comps(ctx):
+    enabled_message = "enabled" if comps_enabled else "disabled"
+    lines = "\n".join(f"* {comp_summary(key)}" for key in COMPS)
+    await ctx.send(f"Competition team reminders are currently {enabled_message}.\n{lines}")
+
+@bot.command()
+@commands.has_role("E-Board")
+async def enable_comps(ctx):
+    global comps_enabled
+    comps_enabled = True
+    save_settings()
+    await ctx.send("Competition team reminders are now enabled.")
+
+@bot.command()
+@commands.has_role("E-Board")
+async def disable_comps(ctx):
+    global comps_enabled
+    comps_enabled = False
+    save_settings()
+    await ctx.send("Competition team reminders are now disabled.")
+
+async def send_comp_reminder(key, when):
+    team = COMPS[key]
+    channel = bot.get_channel(team["channel"])
+    if not channel:
+        return
+    meeting_time = format_12hr(team["hour"], team["minute"])
+    await channel.send(f"<@&{team['role']}> just a reminder we are meeting {when} at {meeting_time}")
+
+@task_module.loop(seconds=30)
+async def comp_scheduler():
+    if not comps_enabled:
+        return
+    now = datetime.now(ZoneInfo("America/New_York"))
+    today = now.weekday()
+    tomorrow = (today + 1) % 7
+    for key, team in COMPS.items():
+        if team["day"] is None:
+            continue
+        meeting_minutes = team["hour"] * 60 + team["minute"]
+        now_minutes = now.hour * 60 + now.minute
+
+        # Day before, at the meeting time
+        if team["day"] == tomorrow and now_minutes == meeting_minutes:
+            sent_key = (key, "before", now.date())
+            if sent_key not in comps_sent:
+                comps_sent.add(sent_key)
+                await send_comp_reminder(key, "tomorrow")
+
+        # Day of, at 12:00 (only if the meeting is after noon)
+        if team["day"] == today and now_minutes == COMP_DAY_OF_HOUR * 60 and meeting_minutes > COMP_DAY_OF_HOUR * 60:
+            sent_key = (key, "today", now.date())
+            if sent_key not in comps_sent:
+                comps_sent.add(sent_key)
+                await send_comp_reminder(key, "today")
+
+    # Forget old entries so the set doesn't grow forever
+    comps_sent.difference_update({k for k in comps_sent if k[2] < now.date()})
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

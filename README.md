@@ -16,15 +16,19 @@ Use !delete [content] to remove an entry. Spelling must be exact. Use !wipe to d
 Reminder Scheduling:
 Use !schedule YYYY-MM-DD HH:MM [message] with the time in 24-hour time to schedule a reminder message.
 
-E-Board Task Reminders
+Task Reminders
 Tasks with a due date are announced the day before that date. Tasks without a specific date are announced the day before the meeting day (default Wednesday). Reminders are sent at 16:00.
 EVERYONE-tab tasks are announced to the E-Board role with status hidden.
 Use !tasks to announce ALL incomplete E-Board tasks.
 Use !set_task_time [day] [24-hour time] to change the meeting day and reminder time. Use !get_task_time to see what it is currently set to.
 Use !enable_tasks or !disable_tasks to enable/disable automatic task reminders.
+Comp teams are reminded the day before their meeting at the meeting time, and again at 12:00 the day of.
+Use !set_rec, !set_rep_new, or !set_rep_cont [day] [24-hour time] to set each team's meeting. Use !get_comps to see them.
+Use !enable_comps or !disable_comps to enable/disable comp team reminders.
 
 File System:
 - changelog.md: Record of all of the changelogs
 - main.py: Main execution of commands for the bot
 - scraper.py, tasks.py: Helper files to port functions to main.py
 - database.py, entries.db: Handles persistence
+- config.py, config.json: Saves bot settings and scheduled reminders across restarts
